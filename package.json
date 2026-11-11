@@ -1,0 +1,28 @@
+{
+  "name": "pv-area",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Medição de áreas e geração de KML/KMZ com pastas — Pasto Verde Consultoria",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test": "node --test tests/logic.test.js"
+  },
+  "dependencies": {
+    "@capacitor-community/keep-awake": "^8.0.1",
+    "@capacitor/android": "^8.6.0",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/core": "^8.6.0",
+    "@capacitor/filesystem": "^8.1.5",
+    "@capacitor/geolocation": "^8.2.4",
+    "@capacitor/share": "^8.0.3",
+    "jszip": "^3.10.2",
+    "leaflet": "^1.9.4"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.6.0",
+    "@xmldom/xmldom": "^0.9.12",
+    "vite": "^8.3.8"
+  }
+}

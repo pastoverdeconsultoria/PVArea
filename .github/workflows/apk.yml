@@ -1,0 +1,74 @@
+name: Gerar APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apk
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Android SDK
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Compilar
+        run: |
+          set -o pipefail
+          {
+            npm ci &&
+            npm test &&
+            VITE_APP_VERSION=1.0.${{ github.run_number }} npm run build &&
+            npx cap sync android &&
+            cd android && chmod +x gradlew &&
+            ./gradlew assembleRelease --no-daemon --stacktrace
+          } 2>&1 | tee build.log
+
+      - name: Preparar APK
+        run: cp android/app/build/outputs/apk/release/app-release.apk pv-area.apk
+
+      - name: Publicar versão
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: PV Área 1.0.${{ github.run_number }}
+          body: |
+            Baixe o arquivo **pv-area.apk** abaixo pelo celular e toque nele para instalar.
+            Versão gerada a partir do commit ${{ github.sha }}.
+          files: pv-area.apk
+          make_latest: true
+
+      # Se falhar, guarda o log num branch para diagnóstico
+      - name: Salvar log de falha
+        if: failure()
+        run: |
+          tail -n 500 build.log > /tmp/build-log.txt 2>/dev/null || echo "sem log" > /tmp/build-log.txt
+          git config user.name "build"
+          git config user.email "build@users.noreply.github.com"
+          git checkout --orphan build-log
+          git rm -rf --cached . > /dev/null
+          cp /tmp/build-log.txt build-log.txt
+          git add -f build-log.txt
+          git commit -m "log de falha ${{ github.sha }}"
+          git push -f origin build-log

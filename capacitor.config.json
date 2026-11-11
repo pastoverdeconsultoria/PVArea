@@ -1,0 +1,8 @@
+{
+  "appId": "br.com.pastoverde.area",
+  "appName": "PV Área",
+  "webDir": "dist",
+  "android": {
+    "allowMixedContent": false
+  }
+}
