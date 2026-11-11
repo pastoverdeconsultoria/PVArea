@@ -33,7 +33,8 @@ export function emptyDb() {
     settings: {
       base: 'esri', googleKey: '', secondary: 'none', labels: 'name_area',
       gpsMinDist: 3, gpsMaxAcc: 15, descArea: true, segLabels: true,
-      lastStyle: { ...DEFAULT_STYLE }, lastIcon: 'blue', lastMethod: {}
+      lastStyle: { ...DEFAULT_STYLE }, lastIcon: 'blue', lastMethod: {},
+      backupReminder: true, lastBackup: null, changedAt: null, remindedAt: null, created: null
     }
   };
 }
@@ -46,6 +47,7 @@ export function normalizeDb(raw) {
   db.activeFolder = raw.activeFolder ?? null;
   db.settings = { ...db.settings, ...(raw.settings || {}) };
   db.settings.lastStyle = { ...DEFAULT_STYLE, ...(db.settings.lastStyle || {}) };
+  if (!db.settings.created) db.settings.created = new Date().toISOString();
   const ids = new Set(db.folders.map(f => f.id));
   for (const f of db.folders) if (f.parentId && !ids.has(f.parentId)) f.parentId = null;
   for (const it of db.items) if (it.folderId && !ids.has(it.folderId)) it.folderId = null;
@@ -179,4 +181,92 @@ export function safeFileName(name) {
   const s = (name || 'pv-area').normalize('NFD').replace(/[̀-ͯ]/g, '')
     .replace(/[^a-zA-Z0-9 _.-]/g, '').trim().replace(/\s+/g, '_');
   return s || 'pv-area';
+}
+
+// ------------------------------------------------------------------ backup
+
+export const BACKUP_VERSION = 1;
+const DAY_MS = 86400000;
+
+function validCoord(c) {
+  return Array.isArray(c) && Number.isFinite(c[0]) && Number.isFinite(c[1]) && Math.abs(c[0]) <= 90 && Math.abs(c[1]) <= 180;
+}
+
+/** Mantém só medições com geometria válida; devolve também quantas foram descartadas. */
+export function sanitizeItems(items) {
+  const out = [];
+  let skipped = 0;
+  for (const it of Array.isArray(items) ? items : []) {
+    const min = it && (it.type === 'polygon' ? 3 : it.type === 'line' ? 2 : it.type === 'point' ? 1 : 0);
+    if (min && Array.isArray(it.coords) && it.coords.length >= min && it.coords.every(validCoord)) {
+      out.push({ ...it, id: it.id || uid(), name: String(it.name ?? 'Medição') });
+    } else skipped++;
+  }
+  return { items: out, skipped };
+}
+
+export function backupFileName(now = new Date()) {
+  const p = n => String(n).padStart(2, '0');
+  return `PVArea-backup-${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}.json`;
+}
+
+/** Objeto do backup. Fica de fora a chave do Google e os controles internos de backup. */
+export function makeBackup(db, now = new Date()) {
+  const settings = { ...db.settings };
+  for (const k of ['googleKey', 'lastBackup', 'changedAt', 'remindedAt', 'created']) delete settings[k];
+  return {
+    app: 'PVArea', version: BACKUP_VERSION, createdAt: now.toISOString(),
+    activeFolder: db.activeFolder, settings, folders: db.folders, items: db.items
+  };
+}
+
+export function parseBackup(text) {
+  let o;
+  try { o = JSON.parse(text); } catch { throw new Error('Arquivo de backup inválido'); }
+  if (!o || o.app !== 'PVArea' || !Array.isArray(o.folders) || !Array.isArray(o.items)) {
+    throw new Error('Este arquivo não é um backup do PV Área');
+  }
+  if (o.version > BACKUP_VERSION) throw new Error('Backup de uma versão mais nova do app. Atualize o app e tente de novo.');
+  const { items, skipped } = sanitizeItems(o.items);
+  const folders = o.folders.filter(f => f && f.id).map(f => ({
+    id: f.id, name: String(f.name || 'Pasta'), parentId: f.parentId ?? null, open: f.open !== false, visible: f.visible !== false
+  }));
+  return { ...o, folders, items, skipped };
+}
+
+/** Banco novo igual ao backup, mantendo a chave do Google e os controles de backup do aparelho. */
+export function restoreBackup(db, backup) {
+  const nd = normalizeDb({ folders: backup.folders, items: backup.items, activeFolder: backup.activeFolder, settings: backup.settings });
+  for (const k of ['googleKey', 'lastBackup', 'created']) nd.settings[k] = db.settings[k];
+  nd.settings.changedAt = new Date().toISOString();
+  return nd;
+}
+
+/** Traz do backup o que ainda não existe no banco (por id). O que já existe fica como está. */
+export function mergeBackup(db, backup) {
+  const fIds = new Set(db.folders.map(f => f.id));
+  const iIds = new Set(db.items.map(i => i.id));
+  let nf = 0, ni = 0;
+  for (const f of backup.folders) {
+    if (!fIds.has(f.id)) { db.folders.push({ ...f }); fIds.add(f.id); nf++; }
+  }
+  for (const it of backup.items) {
+    if (!iIds.has(it.id)) { db.items.push({ ...it }); iIds.add(it.id); ni++; }
+  }
+  for (const f of db.folders) if (f.parentId && !fIds.has(f.parentId)) f.parentId = null;
+  for (const it of db.items) if (it.folderId && !fIds.has(it.folderId)) it.folderId = null;
+  return { folders: nf, items: ni };
+}
+
+/** Passaram 7 dias desde o último backup (ou desde o primeiro uso) e há alteração não salva? */
+export function backupDue(db, now = new Date()) {
+  const s = db.settings;
+  if (!s.backupReminder || !db.items.length) return false;
+  const t = now.getTime();
+  const base = new Date(s.lastBackup || s.created || now).getTime();
+  const changed = s.changedAt ? new Date(s.changedAt).getTime() : 0;
+  if (s.lastBackup && changed <= base) return false;
+  if (t - base < 7 * DAY_MS) return false;
+  if (s.remindedAt && t - new Date(s.remindedAt).getTime() < DAY_MS) return false;
+  return true;
 }

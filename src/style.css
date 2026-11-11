@@ -123,7 +123,6 @@ textarea.in { min-height: 64px; resize: vertical; }
 .lbl small { font-weight: 600; font-size: 11px; }
 .seglbl { background: rgba(0,0,0,.72); border: 0; box-shadow: none; color: #fff; font-size: 11px; padding: 1px 5px; border-radius: 8px; font-variant-numeric: tabular-nums; }
 .seglbl::before { display: none; }
-.zoom-far .lbl { display: none; }
 .pin svg { width: 26px; height: 36px; filter: drop-shadow(0 1px 2px rgba(0,0,0,.6)); }
 .gpsdot { width: 16px; height: 16px; border-radius: 50%; background: #1a73e8; border: 3px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.3); }
 
@@ -132,3 +131,10 @@ textarea.in { min-height: 64px; resize: vertical; }
 .bb.wide { flex: 2; }
 .bb.mark { background: #1a73e8; color: #fff; }
 .modebtn { display: block; margin-top: 7px; border: 1px solid rgba(255,255,255,.4); background: rgba(255,255,255,.08); color: #fff; border-radius: 14px; padding: 5px 11px; font-size: 12.5px; font-weight: 600; }
+
+/* rótulos clicáveis (abrem a medição, mesmo por baixo de outras) */
+.lbl2 { background: transparent; border: 0; }
+.lblin { position: absolute; left: 0; top: 0; transform: translate(-50%, calc(-50% + var(--dy, 0px))); white-space: nowrap; text-align: center; color: #fff; font-weight: 700; font-size: 12px; line-height: 1.15; padding: 3px 7px; border-radius: 9px; background: rgba(0,0,0,.32); text-shadow: 0 0 3px #000, 0 0 2px #000; cursor: pointer; }
+.lblin.pt { transform: translate(-50%, calc(4px + var(--dy, 0px))); }
+.lblin small { font-weight: 600; font-size: 11px; }
+.drawing .leaflet-marker-icon.lbl2, .drawing .leaflet-marker-icon.pin { pointer-events: none !important; }

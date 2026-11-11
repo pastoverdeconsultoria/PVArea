@@ -4,7 +4,8 @@ import { DOMParser } from '@xmldom/xmldom';
 import { ringArea, polygonArea, distance, pathLength, labelPoint, pointInRing, fmtHa, fmtArea, fmtDist } from '../src/geo.js';
 import {
   emptyDb, normalizeDb, addFolder, removeFolder, descendantIds, itemsDeep, folderTotals,
-  exportTree, importTree, canMoveFolder, isVisible, folderPath, safeFileName, itemArea, itemLength
+  exportTree, importTree, canMoveFolder, isVisible, folderPath, safeFileName, itemArea, itemLength,
+  makeBackup, parseBackup, restoreBackup, mergeBackup, backupDue, backupFileName, sanitizeItems
 } from '../src/model.js';
 import { buildKml, parseKml, toKmlColor, fromKmlColor, countTree } from '../src/kml.js';
 
@@ -241,4 +242,89 @@ test('banco: normalização tolera dados quebrados', () => {
   assert.equal(db.settings.gpsMinDist, 3);
   assert.equal(normalizeDb(null).folders.length, 0);
   assert.equal(safeFileName('Fazenda São José / Retiro 1'), 'Fazenda_Sao_Jose_Retiro_1');
+});
+
+test('backup: não leva a chave do Google e restaura igual', () => {
+  const { db } = sampleDb();
+  db.settings.googleKey = 'AIzaSEGREDO';
+  db.settings.secondary = 'tarefa_ba';
+  db.settings.lastBackup = '2026-01-01T00:00:00Z';
+  const text = JSON.stringify(makeBackup(db, new Date('2026-11-11T12:00:00')));
+  assert.ok(!text.includes('AIzaSEGREDO'));
+  assert.ok(!text.includes('lastBackup'));
+  const b = parseBackup(text);
+  assert.equal(b.items.length, 7);
+  assert.equal(b.skipped, 0);
+
+  const outro = emptyDb();
+  outro.settings.googleKey = 'minha-chave';
+  outro.settings.lastBackup = '2026-05-05T00:00:00Z';
+  const nd = restoreBackup(outro, b);
+  assert.equal(nd.items.length, 7);
+  assert.equal(nd.folders.length, 4);
+  assert.equal(nd.settings.secondary, 'tarefa_ba');
+  assert.equal(nd.settings.googleKey, 'minha-chave');
+  assert.equal(nd.settings.lastBackup, '2026-05-05T00:00:00Z');
+  assert.deepEqual(nd.items.map(i => i.coords), db.items.map(i => i.coords));
+  assert.equal(backupFileName(new Date(2026, 10, 5)), 'PVArea-backup-2026-11-05.json');
+});
+
+test('backup: arquivo errado, versão nova e itens danificados', () => {
+  assert.throws(() => parseBackup('não é json'), /inválido/);
+  assert.throws(() => parseBackup('{"app":"outro","folders":[],"items":[]}'), /não é um backup/);
+  assert.throws(() => parseBackup('{"app":"PVArea","version":99,"folders":[],"items":[]}'), /mais nova/);
+  const r = sanitizeItems([
+    { id: 'ok', type: 'polygon', name: 'a', coords: [[0, 0], [0, 1], [1, 1]] },
+    { id: 'poucos', type: 'polygon', coords: [[0, 0], [0, 1]] },
+    { id: 'nan', type: 'point', coords: [[NaN, 0]] },
+    { id: 'fora', type: 'point', coords: [[95, 0]] },
+    { type: 'point', coords: [[1, 1]] },
+    null, { type: 'estranho', coords: [[0, 0]] }
+  ]);
+  assert.equal(r.items.length, 2);
+  assert.equal(r.skipped, 5);
+  assert.ok(r.items.every(i => i.id));
+});
+
+test('backup: juntar traz só o que falta e não duplica', () => {
+  const { db, r1 } = sampleDb();
+  const b = parseBackup(JSON.stringify(makeBackup(db)));
+  // usuário apagou uma medição e uma pasta inteira depois do backup
+  db.items = db.items.filter(i => i.id !== 'a');
+  removeFolder(db, r1.id);
+  const antes = db.items.length;
+  const r = mergeBackup(db, b);
+  assert.equal(r.folders, 1);
+  assert.ok(r.items >= 2);
+  assert.equal(db.items.length, antes + r.items);
+  assert.ok(db.items.some(i => i.id === 'a') && db.folders.some(f => f.id === r1.id));
+  // segunda vez: nada novo
+  assert.deepEqual(mergeBackup(db, b), { folders: 0, items: 0 });
+  // o que já existia não é sobrescrito
+  db.items.find(i => i.id === 'e').name = 'Renomeado no app';
+  mergeBackup(db, b);
+  assert.equal(db.items.find(i => i.id === 'e').name, 'Renomeado no app');
+});
+
+test('backup: lembrete só após 7 dias, com alteração nova, no máximo uma vez por dia', () => {
+  const db = emptyDb();
+  const dia = n => new Date(Date.parse('2026-11-01T12:00:00Z') + n * 86400000);
+  db.items.push({ id: 'x', type: 'point', coords: [[0, 0]], name: 'x' });
+  db.settings.created = dia(0).toISOString();
+  db.settings.changedAt = dia(1).toISOString();
+  assert.equal(backupDue(db, dia(5)), false, 'menos de 7 dias');
+  assert.equal(backupDue(db, dia(8)), true, 'nunca fez backup e usa há 8 dias');
+  db.settings.remindedAt = dia(8).toISOString();
+  assert.equal(backupDue(db, dia(8.5)), false, 'já lembrou hoje');
+  assert.equal(backupDue(db, dia(10)), true);
+  db.settings.lastBackup = dia(9).toISOString();
+  assert.equal(backupDue(db, dia(30)), false, 'nada mudou desde o backup');
+  db.settings.changedAt = dia(12).toISOString();
+  db.settings.remindedAt = null;
+  assert.equal(backupDue(db, dia(14)), false, 'só 5 dias desde o backup');
+  assert.equal(backupDue(db, dia(17)), true);
+  db.settings.backupReminder = false;
+  assert.equal(backupDue(db, dia(40)), false, 'desligado');
+  db.settings.backupReminder = true; db.items = [];
+  assert.equal(backupDue(db, dia(40)), false, 'sem medições');
 });

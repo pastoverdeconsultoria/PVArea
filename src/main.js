@@ -5,7 +5,7 @@ import JSZip from 'jszip';
 import {
   DEFAULT_STYLE, POINT_ICONS, uid, emptyDb, normalizeDb, addFolder, removeFolder, childFolders, folderItems,
   descendantIds, itemsDeep, folderTotals, folderList, folderPath, canMoveFolder, isVisible, itemArea, itemLength,
-  exportTree, importTree, safeFileName
+  exportTree, importTree, safeFileName, makeBackup, parseBackup, restoreBackup, mergeBackup, backupDue, backupFileName
 } from './model.js';
 import { polygonArea, pathLength, distance, labelPoint, bounds, fmtArea, fmtDist, SECONDARY_UNITS } from './geo.js';
 import { buildKml, parseKml, countTree, esc } from './kml.js';
@@ -14,6 +14,7 @@ import { BASES, baseLayers, cachedTileCount, clearTileCache } from './tiles.js';
 
 const $ = id => document.getElementById(id);
 const DRAFT_KEY = 'pvarea.draft.v1';
+const PREV_KEY = 'pvarea.db.beforeRestore';
 const PALETTE = ['#ffeb3b', '#ff9800', '#f44336', '#e91e63', '#9c27b0', '#2196f3', '#00bcd4', '#4caf50', '#8bc34a', '#ffffff', '#000000', '#795548'];
 
 let db = emptyDb();
@@ -34,10 +35,12 @@ function toast(msg, ms = 2600) {
 }
 
 function persist() {
+  db.settings.changedAt = new Date().toISOString();
   if (!saveDb(db)) toast('Não foi possível gravar no celular (armazenamento cheio?)', 5000);
 }
 
 function sec() { return db.settings.secondary; }
+function plural(n, um, varios) { return n + ' ' + (n === 1 ? um : varios); }
 
 function pinSvg(color) {
   return `<svg viewBox="0 0 26 36"><path d="M13 35C13 35 2 20.500 2 12.500a11 11 0 0 1 22 0C24 20.500 13 35 13 35Z" fill="${color}" stroke="#fff" stroke-width="1.500"/><circle cx="13" cy="12.500" r="4" fill="#fff" fill-opacity=".9"/></svg>`;
@@ -173,17 +176,43 @@ function renderItems() {
     });
     itemGroup.addLayer(layer);
     const html = labelHtml(it);
-    if (html) {
-      if (it.type === 'point') {
-        layer.bindTooltip(html, { permanent: true, direction: 'bottom', className: 'lbl', offset: [0, 2] });
-      } else if (anchor) {
-        const tip = L.tooltip({ permanent: true, direction: 'center', className: 'lbl', interactive: false })
-          .setLatLng(anchor).setContent(html);
-        itemGroup.addLayer(tip);
-      }
+    const labAnchor = it.type === 'point' ? it.coords[0] : anchor;
+    if (html && labAnchor) {
+      const lm = L.marker(labAnchor, {
+        icon: L.divIcon({ className: 'lbl2', html: `<div class="lblin${it.type === 'point' ? ' pt' : ''}">${html}</div>`, iconSize: [0, 0] }),
+        keyboard: false, zIndexOffset: 900
+      });
+      lm.on('click', e => {
+        L.DomEvent.stopPropagation(e);
+        if (!draw) openItemSheet(it.id);
+      });
+      itemGroup.addLayer(lm);
     }
   }
+  map.getContainer().classList.toggle('drawing', !!draw);
+  requestAnimationFrame(declutter);
   updateChip();
+}
+
+/** Afasta para baixo os rótulos que se encostam, para todos continuarem legíveis e tocáveis. */
+function declutter() {
+  const els = [...document.querySelectorAll('.lblin')];
+  if (!els.length || els.length > 500) return;
+  els.forEach(e => e.style.removeProperty('--dy'));
+  const rects = els.map(e => { const r = e.getBoundingClientRect(); return { e, l: r.left, r: r.right, t: r.top, b: r.bottom }; });
+  rects.sort((a, b) => a.t - b.t || a.l - b.l);
+  const placed = [];
+  for (const q of rects) {
+    let dy = 0, moved = true, guard = 0;
+    while (moved && guard++ < 40) {
+      moved = false;
+      for (const p of placed) {
+        if (q.l < p.r && q.r > p.l && q.t + dy < p.b && q.b + dy > p.t) { dy = p.b - q.t + 1; moved = true; }
+      }
+    }
+    if (dy) q.e.style.setProperty('--dy', dy + 'px');
+    placed.push({ l: q.l, r: q.r, t: q.t + dy, b: q.b + dy });
+  }
 }
 
 function updateChip() {
@@ -984,6 +1013,15 @@ async function openSettings() {
       <label class="f">Imagens guardadas no celular</label>
       <div class="row" style="margin-top:0"><div class="stat" style="flex:1" id="sCache">contando…</div>
         <button class="btn small" id="sClear" type="button">Limpar</button></div>
+      <label class="f">Backup</label>
+      <div class="stat" id="bkInfo"></div>
+      <div class="row wrap"><button class="btn small" id="bkShare" type="button">Enviar backup</button>
+        <button class="btn small" id="bkSave" type="button">Salvar no celular</button></div>
+      <div class="row wrap"><button class="btn small" id="bkRestore" type="button">Restaurar backup</button>
+        <button class="btn small hidden" id="bkUndo" type="button">Desfazer restauração</button></div>
+      <label class="check"><input type="checkbox" id="bkRem"${s.backupReminder ? ' checked' : ''}> Lembrar de fazer backup (a cada 7 dias)</label>
+      <p class="hint">O backup guarda pastas, medições, cores e configurações, num arquivo .json. Não leva a chave do Google Maps. "Salvar no celular" grava em Documentos/PVArea.</p>
+
       <p class="hint" style="margin-top:14px">PV Área ${esc(import.meta.env?.VITE_APP_VERSION || '')} · Pasto Verde Consultoria</p>
     </div>
     <div class="sheet-foot"><button class="btn primary" data-close type="button">Concluir</button></div>`,
@@ -1003,7 +1041,100 @@ async function openSettings() {
     if (!await askConfirm('Limpar imagens', 'Apagar as imagens de satélite guardadas? Suas medições não são afetadas.', 'Limpar', true)) return;
     await clearTileCache(); count();
   };
+  const bkRefresh = () => {
+    if (!$('bkInfo')) return;
+    $('bkInfo').textContent = s.lastBackup
+      ? 'Último backup: ' + new Date(s.lastBackup).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })
+      : 'Nenhum backup feito ainda';
+    $('bkUndo').classList.toggle('hidden', !hasPrevDb());
+  };
+  bkRefresh();
+  $('bkShare').onclick = async () => { await doBackup('share'); bkRefresh(); };
+  $('bkSave').onclick = async () => { await doBackup('docs'); bkRefresh(); };
+  $('bkRem').onchange = e => { s.backupReminder = e.target.checked; };
+  $('bkRestore').onclick = () => {
+    if (draw) { toast('Conclua ou cancele a medição em andamento antes de restaurar'); return; }
+    $('backupInput').click();
+  };
+  $('bkUndo').onclick = undoRestore;
   return body;
+}
+
+// ------------------------------------------------------------------ backup
+
+async function doBackup(how) {
+  const file = { name: backupFileName(), mime: 'application/json', text: JSON.stringify(makeBackup(db)) };
+  try {
+    if (how === 'docs') {
+      const where = await saveToDocuments(file);
+      toast('Backup salvo em ' + where, 5000);
+    } else {
+      const r = await shareFile(file);
+      if (!r.shared) return false;
+    }
+  } catch (e) {
+    toast('Não consegui gerar o backup: ' + (e.message || e), 5000);
+    return false;
+  }
+  db.settings.lastBackup = new Date().toISOString();
+  saveDb(db);
+  return true;
+}
+
+function hasPrevDb() {
+  try { return !!localStorage.getItem(PREV_KEY); } catch { return false; }
+}
+
+function undoRestore() {
+  let prev;
+  try { prev = JSON.parse(localStorage.getItem(PREV_KEY) || 'null'); } catch { prev = null; }
+  if (!prev) { toast('Não há restauração para desfazer'); return; }
+  db = normalizeDb(prev);
+  try { localStorage.removeItem(PREV_KEY); } catch { /* nada */ }
+  persist(); renderItems(); updateChip();
+  closeSheet(false);
+  toast('Restauração desfeita');
+}
+
+async function restoreFromFile(file) {
+  let backup;
+  try { backup = parseBackup(await file.text()); } catch (e) { toast(e.message || 'Arquivo inválido', 5000); return; }
+  const when = backup.createdAt ? new Date(backup.createdAt).toLocaleDateString('pt-BR') : 'data desconhecida';
+  const choice = await pick(`<h3>Restaurar backup</h3>
+    <p>Backup de ${esc(when)}: ${plural(backup.folders.length, 'pasta', 'pastas')} e ${plural(backup.items.length, 'medição', 'medições')}.${backup.skipped ? `\n(${backup.skipped} itens danificados serão ignorados)` : ''}
+No app agora: ${plural(db.folders.length, 'pasta', 'pastas')} e ${plural(db.items.length, 'medição', 'medições')}.</p>
+    <div class="menu">
+      <button class="btn primary" data-v="merge" type="button"><b>Juntar</b><span class="sub">Traz o que está no backup e ainda não está no app. Não apaga nada.</span></button>
+      <button class="btn danger" data-v="replace" type="button"><b>Substituir tudo</b><span class="sub">Deixa o app igual ao backup. Dá para desfazer logo depois.</span></button>
+      <button class="btn" data-v="" type="button">Cancelar</button></div>`);
+  if (!choice) return;
+  if (choice === 'merge') {
+    const r = mergeBackup(db, backup);
+    persist(); renderItems(); updateChip();
+    closeSheet(false);
+    toast(r.items || r.folders
+      ? `${r.items} ${r.items === 1 ? 'medição trazida' : 'medições trazidas'} do backup`
+      : 'Nada novo: tudo do backup já estava no app', 4000);
+    return;
+  }
+  try { localStorage.setItem(PREV_KEY, JSON.stringify(db)); } catch { /* sem espaço: segue sem a cópia de segurança */ }
+  db = restoreBackup(db, backup);
+  persist(); renderItems(); updateChip();
+  closeSheet(false);
+  const all = allCoords(db.items.filter(i => isVisible(db, i)));
+  if (all.length) fitTo(all);
+  toast('Backup restaurado. Em Configurações dá para desfazer.', 5000);
+}
+
+async function maybeRemindBackup() {
+  if (!backupDue(db)) return;
+  db.settings.remindedAt = new Date().toISOString();
+  saveDb(db);
+  const quando = db.settings.lastBackup
+    ? 'O último foi em ' + new Date(db.settings.lastBackup).toLocaleDateString('pt-BR') + '.'
+    : 'Você ainda não fez nenhum.';
+  const ok = await askConfirm('Fazer backup?', `Há medições sem backup. ${quando}\nEnviar uma cópia agora?`, 'Fazer backup');
+  if (ok) await doBackup('share');
 }
 
 // ------------------------------------------------------------------ barra inferior
@@ -1087,8 +1218,7 @@ async function init() {
     }
     addPoint([e.latlng.lat, e.latlng.lng]);
   });
-  const zoomClass = () => map.getContainer().classList.toggle('zoom-far', map.getZoom() < 13);
-  map.on('zoomend', zoomClass); zoomClass();
+  map.on('zoomend', () => requestAnimationFrame(declutter));
 
   await setBase();
   renderItems();
@@ -1110,6 +1240,11 @@ async function init() {
     await startGps();
     $('btnLocate').classList.add('on');
   };
+  $('backupInput').addEventListener('change', async e => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (f) await restoreFromFile(f);
+  });
   $('fileInput').addEventListener('change', async e => {
     const files = [...e.target.files];
     e.target.value = '';
@@ -1128,6 +1263,8 @@ async function init() {
       else clearDraft();
     }
   } catch { clearDraft(); }
+
+  await maybeRemindBackup();
 
   if (!db.items.length && !draw) { followOnce = true; startGps().then(() => $('btnLocate').classList.add('on')); }
 }

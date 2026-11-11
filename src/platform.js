@@ -70,6 +70,7 @@ export async function shareFile(file) {
     await Share.share({ title: file.name, files: [res.uri], dialogTitle: 'Enviar ' + file.name });
   } catch (e) {
     if (!/cancel/i.test(String(e && e.message))) throw e;
+    return { shared: false };
   }
   return { shared: true };
 }
