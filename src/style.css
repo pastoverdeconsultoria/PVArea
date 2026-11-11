@@ -126,3 +126,9 @@ textarea.in { min-height: 64px; resize: vertical; }
 .zoom-far .lbl { display: none; }
 .pin svg { width: 26px; height: 36px; filter: drop-shadow(0 1px 2px rgba(0,0,0,.6)); }
 .gpsdot { width: 16px; height: 16px; border-radius: 50%; background: #1a73e8; border: 3px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.3); }
+
+/* escolha de método e modo de medição */
+.btn .sub { display: block; font-weight: 400; font-size: 13px; opacity: .8; margin-top: 2px; line-height: 1.3; }
+.bb.wide { flex: 2; }
+.bb.mark { background: #1a73e8; color: #fff; }
+.modebtn { display: block; margin-top: 7px; border: 1px solid rgba(255,255,255,.4); background: rgba(255,255,255,.08); color: #fff; border-radius: 14px; padding: 5px 11px; font-size: 12.5px; font-weight: 600; }

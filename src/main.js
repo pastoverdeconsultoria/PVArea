@@ -209,7 +209,7 @@ function allCoords(items) {
 async function startGps() {
   if (gps.stop) return;
   gps.wanted = true;
-  gps.stop = await watchGps(onFix, msg => { gps.fix = null; updateHud(); if (!draw) toast(msg); });
+  gps.stop = await watchGps(onFix, msg => { gps.fix = null; gps.err = msg; updateHud(); if (!draw) toast(msg); });
 }
 
 function stopGps() {
@@ -224,6 +224,7 @@ let followOnce = false;
 
 function onFix(fix) {
   gps.fix = fix;
+  gps.err = null;
   const ll = [fix.lat, fix.lng];
   if (!gps.marker) {
     gps.circle = L.circle(ll, { radius: fix.acc || 1, color: '#1a73e8', weight: 1, fillOpacity: 0.12, interactive: false }).addTo(gpsLayer);
@@ -251,10 +252,92 @@ function recordFix(fix) {
 
 // ------------------------------------------------------------------ desenho
 
-function startDraw(type, existing = null) {
+/** Pergunta como medir: Manual, ou GPS (percorrer / marcar ponto). Devolve 'manual' | 'gps-walk' | 'gps-mark' ou null. */
+function pick(html) {
+  const p = modal(html);
+  $('modalBody').querySelectorAll('[data-v]').forEach(b => { b.onclick = () => closeModal(b.dataset.v); });
+  return p;
+}
+
+async function chooseMethod(type) {
+  const last = (db.settings.lastMethod || {})[type] || 'manual';
+  const noun = type === 'point' ? 'o ponto' : type === 'line' ? 'a distância' : 'a área';
+  const remember = m => { db.settings.lastMethod = { ...(db.settings.lastMethod || {}), [type]: m }; persist(); return m; };
+  for (;;) {
+    const src = await pick(`<h3>Medir ${noun}</h3><div class="menu">
+      <button class="btn${last === 'manual' ? ' primary' : ''}" data-v="manual" type="button"><b>Manual</b><span class="sub">Toque no mapa para marcar os pontos</span></button>
+      <button class="btn${last !== 'manual' ? ' primary' : ''}" data-v="gps" type="button"><b>GPS</b><span class="sub">${type === 'point' ? 'Usar a posição do celular' : 'Usar a posição do celular'}</span></button>
+      <button class="btn" data-v="" type="button">Cancelar</button></div>`);
+    if (!src) return null;
+    if (src === 'manual') return remember('manual');
+    if (type === 'point') return remember('gps-mark');
+    const g = await pick(`<h3>GPS: como medir?</h3><div class="menu">
+      <button class="btn${last !== 'gps-mark' ? ' primary' : ''}" data-v="walk" type="button"><b>Percorrer</b><span class="sub">Caminhe pelo contorno e o app grava os pontos sozinho</span></button>
+      <button class="btn${last === 'gps-mark' ? ' primary' : ''}" data-v="mark" type="button"><b>Marcar ponto</b><span class="sub">Vá até cada canto e toque para marcar onde você está</span></button>
+      <button class="btn" data-v="back" type="button">Voltar</button></div>`);
+    if (g === null || g === '') return null;
+    if (g === 'back') continue;
+    return remember(g === 'walk' ? 'gps-walk' : 'gps-mark');
+  }
+}
+
+async function startMeasure(type) {
+  const mode = await chooseMethod(type);
+  if (!mode) return;
+  startDraw(type, null, mode);
+}
+
+async function changeMode() {
+  if (!draw) return;
+  const d = draw;
+  const mode = await chooseMethod(d.type);
+  if (!mode || draw !== d) return;
+  enterMode(mode, false);
+}
+
+function startRecording() {
+  if (!draw || draw.recording) return;
+  draw.recording = true;
+  keepAwake(true);
+  if (gps.fix) recordFix(gps.fix);
+  renderBottom();
+  redrawDraw(true);
+}
+
+function stopRecording() {
+  if (!draw || !draw.recording) return;
+  draw.recording = false;
+  keepAwake(false);
+  renderBottom();
+  redrawDraw(true);
+}
+
+async function enterMode(mode, hint = true) {
+  if (!draw) return;
+  const d = draw;
+  d.mode = mode;
+  if (d.recording && mode !== 'gps-walk') stopRecording();
+  renderBottom();
+  redrawDraw(true);
+  if (mode === 'manual') {
+    if (hint && !d.editingId) toast(d.type === 'point' ? 'Toque no mapa para posicionar o ponto' : 'Toque no mapa para marcar os pontos');
+    return;
+  }
+  if (!gps.stop) { followOnce = true; await startGps(); $('btnLocate').classList.add('on'); }
+  if (draw !== d || d.mode !== mode) return;
+  if (mode === 'gps-walk') {
+    startRecording();
+    toast('Caminhe pelo contorno. Mantenha a tela ligada.', 4000);
+  } else if (hint) {
+    toast(d.type === 'point' ? 'Toque em "Usar posição" quando estiver no local' : 'Vá até o canto e toque em "Marcar ponto"', 4000);
+  }
+}
+
+function startDraw(type, existing = null, mode = 'manual') {
   closeSheet(false);
   draw = {
     type,
+    mode: 'manual',
     coords: existing ? existing.coords.map(c => [c[0], c[1]]) : [],
     holes: existing && existing.holes ? existing.holes : null,
     editingId: existing ? existing.id : null,
@@ -266,8 +349,7 @@ function startDraw(type, existing = null) {
   renderBottom();
   redrawDraw(true);
   if (existing) fitTo(existing.coords);
-  if (type !== 'point' && !existing) toast('Toque no mapa para marcar os pontos');
-  if (type === 'point' && !existing) toast('Toque no mapa para posicionar o ponto');
+  enterMode(mode, !existing);
 }
 
 function drawStyle() {
@@ -379,7 +461,7 @@ function undoPoint() {
 
 function updateHud() {
   const hud = $('hud');
-  if (!draw) { hud.classList.add('hidden'); $('btnFolder').classList.remove('hidden'); return; }
+  if (!draw) { hud.classList.add('hidden'); hud._last = null; $('btnFolder').classList.remove('hidden'); return; }
   $('btnFolder').classList.add('hidden');
   hud.classList.remove('hidden');
   let h = '';
@@ -397,10 +479,12 @@ function updateHud() {
       const bad = gps.fix.acc > db.settings.gpsMaxAcc;
       h += `<div class="gps${bad ? ' bad' : ''}">GPS ±${Math.round(gps.fix.acc)} m${bad ? ' — fraco, aguardando melhorar' : ''}${draw.recording ? ' · gravando' : ''}</div>`;
     } else {
-      h += '<div class="gps bad">Procurando sinal de GPS…</div>';
+      h += `<div class="gps bad">${esc(gps.err || 'Procurando sinal de GPS…')}</div>`;
     }
   }
-  hud.innerHTML = h;
+  const modeTxt = { manual: 'Manual · toque no mapa', 'gps-walk': 'GPS · percorrer', 'gps-mark': 'GPS · marcar ponto' }[draw.mode];
+  h += `<button class="modebtn" data-mode type="button">${modeTxt} ▾</button>`;
+  if (hud._last !== h) { hud._last = h; hud.innerHTML = h; }
 }
 
 async function gpsPoint() {
@@ -414,20 +498,9 @@ async function gpsPoint() {
   map.panTo([gps.fix.lat, gps.fix.lng]);
 }
 
-async function toggleRecord() {
+function toggleRecord() {
   if (!draw) return;
-  if (!draw.recording) {
-    if (!gps.stop) { followOnce = true; await startGps(); $('btnLocate').classList.add('on'); }
-    draw.recording = true;
-    keepAwake(true);
-    toast('Gravando: caminhe pelo contorno. Mantenha a tela ligada.', 4000);
-    if (gps.fix) recordFix(gps.fix);
-  } else {
-    draw.recording = false;
-    keepAwake(false);
-  }
-  renderBottom();
-  redrawDraw(true);
+  if (draw.recording) stopRecording(); else startRecording();
 }
 
 async function cancelDraw() {
@@ -956,25 +1029,30 @@ function renderBottom() {
       <button class="bb" id="bbLine" type="button">${ICON.line}<span>Distância</span></button>
       <button class="bb" id="bbPoint" type="button">${ICON.point}<span>Ponto</span></button>
       <button class="bb" id="bbFolders" type="button">${ICON.folder}<span>Pastas</span></button>`;
-    $('bbArea').onclick = () => startDraw('polygon');
-    $('bbLine').onclick = () => startDraw('line');
-    $('bbPoint').onclick = () => startDraw('point');
+    $('bbArea').onclick = () => startMeasure('polygon');
+    $('bbLine').onclick = () => startMeasure('line');
+    $('bbPoint').onclick = () => startMeasure('point');
     $('bbFolders').onclick = openFolders;
     return;
   }
-  const walk = draw.type !== 'point';
+  const multi = draw.type !== 'point';
+  let mid = '';
+  if (draw.mode === 'gps-mark') {
+    mid = `<button class="bb wide mark" id="bbMark" type="button">${ICON.gps}<span>${multi ? 'Marcar ponto' : 'Usar posição'}</span></button>`;
+  } else if (draw.mode === 'gps-walk') {
+    mid = `<button class="bb wide${draw.recording ? ' rec' : ''}" id="bbRec" type="button">${draw.recording ? ICON.pause : ICON.rec}<span>${draw.recording ? 'Pausar' : 'Retomar'}</span></button>`;
+  }
   bar.innerHTML = `
     <button class="bb warn" id="bbCancel" type="button">${ICON.x}<span>Cancelar</span></button>
-    ${walk ? `<button class="bb" id="bbUndo" type="button">${ICON.undo}<span>Desfazer</span></button>` : ''}
-    <button class="bb" id="bbGps" type="button"${draw.recording ? ' disabled' : ''}>${ICON.gps}<span>GPS</span></button>
-    ${walk ? `<button class="bb${draw.recording ? ' rec' : ''}" id="bbRec" type="button">${draw.recording ? ICON.pause : ICON.rec}<span>${draw.recording ? 'Pausar' : 'Caminhar'}</span></button>` : ''}
+    ${multi ? `<button class="bb" id="bbUndo" type="button">${ICON.undo}<span>Desfazer</span></button>` : ''}
+    ${mid}
     <button class="bb primary" id="bbDone" type="button">${ICON.ok}<span>Concluir</span></button>`;
   $('bbCancel').onclick = cancelDraw;
-  if (walk) { $('bbUndo').onclick = undoPoint; $('bbRec').onclick = toggleRecord; }
-  $('bbGps').onclick = gpsPoint;
+  if (multi) { $('bbUndo').onclick = undoPoint; $('bbUndo').disabled = !draw.coords.length; }
+  if ($('bbMark')) $('bbMark').onclick = gpsPoint;
+  if ($('bbRec')) $('bbRec').onclick = toggleRecord;
   $('bbDone').onclick = finishDraw;
   $('bbDone').disabled = !canFinish();
-  if (walk) $('bbUndo').disabled = !draw.coords.length;
 }
 
 // ------------------------------------------------------------------ início
@@ -1000,8 +1078,13 @@ async function init() {
   const start = allCoords(db.items.filter(i => isVisible(db, i)));
   if (start.length) fitTo(start); else map.setView([-12.6, -41.7], 6);
 
+  let lastHint = 0;
   map.on('click', e => {
     if (!draw || draw.recording) return;
+    if (draw.mode !== 'manual') {
+      if (Date.now() - lastHint > 4000) { lastHint = Date.now(); toast('Neste modo os pontos vêm do GPS. Toque em "Modo" no topo para marcar à mão.', 3500); }
+      return;
+    }
     addPoint([e.latlng.lat, e.latlng.lng]);
   });
   const zoomClass = () => map.getContainer().classList.toggle('zoom-far', map.getZoom() < 13);
@@ -1013,6 +1096,7 @@ async function init() {
   updateHud();
 
   $('btnFolder').onclick = openFolders;
+  $('hud').addEventListener('click', e => { if (e.target.closest('[data-mode]')) changeMode(); });
   $('btnLayers').onclick = openLayers;
   $('btnSettings').onclick = openSettings;
   $('btnFit').onclick = () => {

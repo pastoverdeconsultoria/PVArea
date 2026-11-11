@@ -33,7 +33,7 @@ export function emptyDb() {
     settings: {
       base: 'esri', googleKey: '', secondary: 'none', labels: 'name_area',
       gpsMinDist: 3, gpsMaxAcc: 15, descArea: true, segLabels: true,
-      lastStyle: { ...DEFAULT_STYLE }, lastIcon: 'blue'
+      lastStyle: { ...DEFAULT_STYLE }, lastIcon: 'blue', lastMethod: {}
     }
   };
 }
