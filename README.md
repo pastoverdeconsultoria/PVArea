@@ -9,6 +9,9 @@ e gerar KML/KMZ com pastas, como o Google Earth do computador.
 - Cor, espessura e transparência do contorno e do preenchimento, por medição ou para a pasta toda.
 - Importa KML/KMZ existentes mantendo pastas e cores.
 - Imagem de satélite da Esri guardada no celular depois de vista, para uso sem sinal.
+- Toque numa medição para destacá-la (Editar, Apagar, Configurações); com várias sobrepostas, escolhe-se pelo rótulo.
+- Gota de precisão para arrastar os pontos sem o dedo cobrir o ponto.
+- Mapa gira com dois dedos (bússola volta o norte para cima). Rotação: leaflet-rotate (licença GPL-3).
 
 ## Baixar o APK
 

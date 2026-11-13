@@ -21,6 +21,9 @@
     <button id="btnLocate" class="fab" type="button" aria-label="Minha posição">
       <svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm9 3h-1.6A7.5 7.5 0 0 0 13 4.6V3h-2v1.6A7.5 7.5 0 0 0 4.600 11H3v2h1.600A7.5 7.5 0 0 0 11 19.400V21h2v-1.600A7.5 7.5 0 0 0 19.400 13H21v-2Zm-9 6.500a5.500 5.500 0 1 1 0-11 5.500 5.500 0 0 1 0 11Z"/></svg>
     </button>
+    <button id="btnNorth" class="fab hidden" type="button" aria-label="Norte para cima">
+      <svg viewBox="0 0 24 24"><path d="M12 2 7 12h10L12 2Z" fill="#d32f2f"/><path d="M7 12l5 10 5-10H7Z" fill="#9aa59d"/><text x="12" y="10.6" text-anchor="middle" font-size="5.5" font-weight="700" fill="#fff" font-family="sans-serif">N</text></svg>
+    </button>
     <button id="btnFit" class="fab" type="button" aria-label="Ver tudo">
       <svg viewBox="0 0 24 24"><path d="M4 9V4h5v2H6v3H4Zm11-5h5v5h-2V6h-3V4ZM4 15h2v3h3v2H4v-5Zm14 3v-3h2v5h-5v-2h3Z"/></svg>
     </button>
@@ -30,6 +33,7 @@
   </div>
 
   <div id="bottombar"></div>
+  <div id="selbar" class="hidden"></div>
 
   <div id="sheet" class="sheet-bg"><div class="sheet" id="sheetBody"></div></div>
   <div id="modal" class="modal-bg"><div class="modal" id="modalBody"></div></div>

@@ -18,7 +18,8 @@
     "@capacitor/geolocation": "^8.2.4",
     "@capacitor/share": "^8.0.3",
     "jszip": "^3.10.2",
-    "leaflet": "^1.9.4"
+    "leaflet": "^1.9.4",
+    "leaflet-rotate": "^0.6.0"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.6.0",

@@ -1,13 +1,13 @@
 import 'leaflet/dist/leaflet.css';
 import './style.css';
-import L from 'leaflet';
+import L from './rotate.js';
 import JSZip from 'jszip';
 import {
   DEFAULT_STYLE, POINT_ICONS, uid, emptyDb, normalizeDb, addFolder, removeFolder, childFolders, folderItems,
   descendantIds, itemsDeep, folderTotals, folderList, folderPath, canMoveFolder, isVisible, itemArea, itemLength,
   exportTree, importTree, safeFileName, makeBackup, parseBackup, restoreBackup, mergeBackup, backupDue, backupFileName
 } from './model.js';
-import { polygonArea, pathLength, distance, labelPoint, bounds, fmtArea, fmtDist, SECONDARY_UNITS } from './geo.js';
+import { polygonArea, pathLength, distance, labelPoint, pointInRing, bounds, fmtArea, fmtDist, SECONDARY_UNITS } from './geo.js';
 import { buildKml, parseKml, countTree, esc } from './kml.js';
 import { isNative, loadDb, saveDb, shareFile, saveToDocuments, watchGps, keepAwake, onBackButton } from './platform.js';
 import { BASES, baseLayers, cachedTileCount, clearTileCache } from './tiles.js';
@@ -23,6 +23,9 @@ let draw = null;          // medição em andamento
 let gps = { stop: null, fix: null, marker: null, circle: null, wanted: false };
 let sheetOnClose = null;
 let modalResolve = null;
+let sel = null;           // medição selecionada no mapa (id)
+let selLayer = null;      // destaque da selecionada
+const DROP_OFF = 64;      // distância (px) da gota até o ponto que ela move
 
 // ------------------------------------------------------------------ utilidades
 
@@ -140,7 +143,7 @@ function leafletStyle(it) {
 
 function labelHtml(it) {
   const mode = db.settings.labels;
-  if (mode === 'none') return '';
+  if (!db.settings.showLabels) return '';
   let h = esc(it.name);
   if (mode === 'name_area') {
     if (it.type === 'polygon') h += `<br><small>${esc(fmtArea(itemArea(it), 'none'))}</small>`;
@@ -156,10 +159,10 @@ function renderItems() {
     if (it.id === editingId || !isVisible(db, it)) continue;
     let layer, anchor;
     if (it.type === 'polygon') {
-      layer = L.polygon([it.coords, ...(it.holes || [])], leafletStyle(it));
+      layer = L.polygon([it.coords, ...(it.holes || [])], { ...leafletStyle(it), interactive: false });
       anchor = labelPoint(it.coords);
     } else if (it.type === 'line') {
-      layer = L.polyline(it.coords, leafletStyle(it));
+      layer = L.polyline(it.coords, { ...leafletStyle(it), interactive: false });
       const k = Math.floor((it.coords.length - 1) / 2);
       const p1 = it.coords[k], p2 = it.coords[k + 1] || p1;
       anchor = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2];
@@ -169,11 +172,12 @@ function renderItems() {
         icon: L.divIcon({ className: 'pin', html: pinSvg(ic.color), iconSize: [26, 36], iconAnchor: [13, 35] })
       });
     }
-    layer.on('click', e => {
-      if (draw) return;
-      L.DomEvent.stopPropagation(e);
-      openItemSheet(it.id);
-    });
+    if (it.type === 'point') {
+      layer.on('click', e => {
+        L.DomEvent.stopPropagation(e);
+        if (!draw) selectItem(it.id);
+      });
+    }
     itemGroup.addLayer(layer);
     const html = labelHtml(it);
     const labAnchor = it.type === 'point' ? it.coords[0] : anchor;
@@ -184,7 +188,7 @@ function renderItems() {
       });
       lm.on('click', e => {
         L.DomEvent.stopPropagation(e);
-        if (!draw) openItemSheet(it.id);
+        if (!draw) selectItem(it.id);
       });
       itemGroup.addLayer(lm);
     }
@@ -192,6 +196,126 @@ function renderItems() {
   map.getContainer().classList.toggle('drawing', !!draw);
   requestAnimationFrame(declutter);
   updateChip();
+  renderSelection();
+}
+
+// ------------------------------------------------------------------ seleção no mapa (como no Fields)
+
+const TYPE_NAME = { polygon: 'Área', line: 'Linha', point: 'Ponto' };
+
+function itemInfo(it) {
+  return it.type === 'polygon' ? fmtArea(itemArea(it), sec())
+    : it.type === 'line' ? fmtDist(itemLength(it))
+      : (POINT_ICONS[it.icon] || POINT_ICONS.red).label;
+}
+
+function selectItem(id) {
+  closeChooser();
+  sel = id;
+  renderSelection();
+}
+
+function clearSelection() {
+  closeChooser();
+  if (!sel) return;
+  sel = null;
+  renderSelection();
+}
+
+/** Desenha o destaque da medição selecionada e a barra Editar / Apagar / Configurações. */
+function renderSelection() {
+  if (!selLayer) return;
+  selLayer.clearLayers();
+  const it = sel && db.items.find(i => i.id === sel);
+  const bar = $('selbar');
+  if (!it || !isVisible(db, it) || draw) {
+    if (!draw && sel && !it) sel = null;
+    bar.classList.add('hidden');
+    $('bottombar').classList.remove('hidden');
+    document.body.classList.remove('has-sel');
+    return;
+  }
+  const s = { ...DEFAULT_STYLE, ...(it.style || {}) };
+  if (it.type === 'point') {
+    L.circleMarker(it.coords[0], { radius: 22, color: '#00e5ff', weight: 3, fillColor: '#00e5ff', fillOpacity: 0.18, interactive: false }).addTo(selLayer);
+  } else {
+    const rings = it.type === 'polygon' ? [it.coords, ...(it.holes || [])] : it.coords;
+    const Shape = it.type === 'polygon' ? L.polygon : L.polyline;
+    Shape(rings, { color: '#000', opacity: 0.45, weight: s.width + 8, fill: false, interactive: false, lineJoin: 'round' }).addTo(selLayer);
+    Shape(rings, { color: '#00e5ff', opacity: 1, weight: Math.max(3, s.width + 1), fill: it.type === 'polygon', fillColor: '#ffffff', fillOpacity: 0.22, interactive: false, lineJoin: 'round' }).addTo(selLayer);
+  }
+  const edit = it.type === 'polygon' ? 'Editar polígono' : it.type === 'line' ? 'Editar linha' : 'Mover ponto';
+  bar.innerHTML = `<div class="selhead"><div class="selname"><b>${esc(it.name)}</b><small>${esc(TYPE_NAME[it.type])} · ${esc(itemInfo(it))}</small></div>
+      <button class="x" id="selX" type="button" aria-label="Fechar">×</button></div>
+    <div class="selbtns">
+      <button class="bb primary" id="selEdit" type="button">${ICON.edit}<span>${edit}</span></button>
+      <button class="bb warn" id="selDel" type="button">${ICON.trash}<span>Apagar</span></button>
+      <button class="bb" id="selCfg" type="button">${ICON.cfg}<span>Configurações</span></button></div>`;
+  bar.classList.remove('hidden');
+  $('bottombar').classList.add('hidden');
+  document.body.classList.add('has-sel');
+  $('selX').onclick = clearSelection;
+  $('selEdit').onclick = () => startDraw(it.type, it);
+  $('selDel').onclick = async () => {
+    if (!await askConfirm('Apagar', `Apagar "${it.name}"? Isso não pode ser desfeito.`, 'Apagar', true)) return;
+    db.items = db.items.filter(i => i.id !== it.id);
+    sel = null;
+    persist();
+    renderItems();
+    toast('Apagado');
+  };
+  $('selCfg').onclick = () => openItemSheet(it.id);
+}
+
+/** Medições (áreas e linhas) que estão debaixo do toque. Pontos têm o próprio toque. */
+function hitTest(latlng, cp) {
+  const pt = [latlng.lat, latlng.lng];
+  const hits = [];
+  for (const it of db.items) {
+    if (!isVisible(db, it) || it.type === 'point') continue;
+    if (it.type === 'polygon') {
+      if (pointInRing(pt, it.coords) && !(it.holes || []).some(h => pointInRing(pt, h))) hits.push({ it, size: itemArea(it) });
+      else if (nearPath(it.coords, cp, true)) hits.push({ it, size: itemArea(it) });
+    } else if (nearPath(it.coords, cp, false)) {
+      hits.push({ it, size: 0 });
+    }
+  }
+  hits.sort((a, b) => a.size - b.size);
+  return hits.map(h => h.it);
+}
+
+function nearPath(coords, cp, closed, tol = 14) {
+  const pts = coords.map(c => map.latLngToContainerPoint(c));
+  const n = pts.length, segs = closed ? n : n - 1;
+  for (let i = 0; i < segs; i++) {
+    const a = pts[i], b = pts[(i + 1) % n];
+    const dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy;
+    const t = l2 ? Math.max(0, Math.min(1, ((cp.x - a.x) * dx + (cp.y - a.y) * dy) / l2)) : 0;
+    const x = a.x + t * dx - cp.x, y = a.y + t * dy - cp.y;
+    if (x * x + y * y <= tol * tol) return true;
+  }
+  return false;
+}
+
+/** Vários polígonos debaixo do toque: mostra os rótulos de cada um para escolher. */
+function showChooser(items, cp) {
+  closeChooser();
+  const box = document.createElement('div');
+  box.id = 'chooser';
+  box.innerHTML = items.slice(0, 8).map(it => {
+    const s = { ...DEFAULT_STYLE, ...(it.style || {}) };
+    return `<button type="button" class="chip2" data-id="${it.id}" style="border-left-color:${s.stroke}"><b>${esc(it.name)}</b><small>${esc(itemInfo(it))}</small></button>`;
+  }).join('');
+  document.body.appendChild(box);
+  const r = box.getBoundingClientRect(), W = window.innerWidth, H = window.innerHeight;
+  box.style.left = Math.max(8, Math.min(W - r.width - 8, cp.x - r.width / 2)) + 'px';
+  box.style.top = Math.max(60, Math.min(H - r.height - 90, cp.y - r.height / 2)) + 'px';
+  box.querySelectorAll('[data-id]').forEach(b => { b.onclick = () => selectItem(b.dataset.id); });
+}
+
+function closeChooser() {
+  const c = $('chooser');
+  if (c) c.remove();
 }
 
 /** Afasta para baixo os rótulos que se encostam, para todos continuarem legíveis e tocáveis. */
@@ -235,17 +359,35 @@ function allCoords(items) {
 
 // ------------------------------------------------------------------ GPS
 
+/** O GPS fica ligado sempre que o app está na tela (e também durante uma caminhada gravando). */
 async function startGps() {
-  if (gps.stop) return;
+  if (gps.stop || gps.starting) return;
   gps.wanted = true;
-  gps.stop = await watchGps(onFix, msg => { gps.fix = null; gps.err = msg; updateHud(); if (!draw) toast(msg); });
+  gps.starting = true;
+  let warned = false;
+  try {
+    gps.stop = await watchGps(onFix, msg => {
+      gps.fix = null; gps.err = msg; updateHud(); updateLocateBtn();
+      if (!draw && !warned) { warned = true; toast(msg, 4000); }
+    });
+  } finally { gps.starting = false; }
 }
 
 function stopGps() {
   if (gps.stop) gps.stop();
   gps = { stop: null, fix: null, marker: null, circle: null, wanted: false };
   if (gpsLayer) gpsLayer.clearLayers();
-  $('btnLocate').classList.remove('on');
+  updateLocateBtn();
+}
+
+function updateLocateBtn() { $('btnLocate').classList.toggle('on', !!gps.fix); }
+
+/** Botão de alvo: só leva o mapa até a posição atual, com zoom. Não desliga o GPS. */
+async function goToMe() {
+  if (gps.fix) { map.setView([gps.fix.lat, gps.fix.lng], Math.max(map.getZoom(), 18)); return; }
+  followOnce = true;
+  toast(gps.err || 'Procurando sinal de GPS…');
+  await startGps();
 }
 
 let gpsLayer = null;
@@ -265,6 +407,7 @@ function onFix(fix) {
   if (followOnce) { followOnce = false; map.setView(ll, Math.max(map.getZoom(), 17)); }
   if (draw && draw.recording) recordFix(fix);
   updateHud();
+  updateLocateBtn();
 }
 
 function recordFix(fix) {
@@ -352,7 +495,8 @@ async function enterMode(mode, hint = true) {
     if (hint && !d.editingId) toast(d.type === 'point' ? 'Toque no mapa para posicionar o ponto' : 'Toque no mapa para marcar os pontos');
     return;
   }
-  if (!gps.stop) { followOnce = true; await startGps(); $('btnLocate').classList.add('on'); }
+  if (!gps.fix) followOnce = true;
+  await startGps();
   if (draw !== d || d.mode !== mode) return;
   if (mode === 'gps-walk') {
     startRecording();
@@ -364,6 +508,7 @@ async function enterMode(mode, hint = true) {
 
 function startDraw(type, existing = null, mode = 'manual') {
   closeSheet(false);
+  closeChooser();
   draw = {
     type,
     mode: 'manual',
@@ -371,6 +516,7 @@ function startDraw(type, existing = null, mode = 'manual') {
     holes: existing && existing.holes ? existing.holes : null,
     editingId: existing ? existing.id : null,
     recording: false,
+    selV: null,
     undo: []
   };
   map.doubleClickZoom.disable();
@@ -422,6 +568,7 @@ function canFinish() {
 
 function rebuildHandles() {
   draw.handles.clearLayers();
+  if (dropLayer) { dropLayer.remove(); dropLayer = null; }
   if (draw.recording) return;
   const n = draw.coords.length;
   if (draw.type === 'point') {
@@ -436,17 +583,22 @@ function rebuildHandles() {
   }
   if (n > 400) { toast('Muitos pontos: os marcadores de ajuste ficam ocultos', 3500); return; }
   const closed = draw.type === 'polygon';
+  if (draw.selV != null && draw.selV >= n) draw.selV = null;
+  draw.vmarks = [];
   draw.coords.forEach((c, i) => {
     const m = L.marker(c, {
-      draggable: true, zIndexOffset: 500,
-      icon: L.divIcon({ className: '', html: `<div class="vh${i === 0 ? ' first' : ''}"></div>`, iconSize: [26, 26], iconAnchor: [13, 13] })
+      draggable: true, zIndexOffset: i === draw.selV ? 700 : 500,
+      icon: L.divIcon({ className: '', html: `<div class="vh${i === 0 ? ' first' : ''}${i === draw.selV ? ' sel' : ''}"></div>`, iconSize: [26, 26], iconAnchor: [13, 13] })
     }).addTo(draw.handles);
-    m.on('drag', () => { const p = m.getLatLng(); draw.coords[i] = [p.lat, p.lng]; redrawDraw(false); });
+    draw.vmarks.push(m);
+    m.on('dragstart', () => { if (draw.selV !== i) { draw.selV = i; if (dropLayer) { dropLayer.remove(); dropLayer = null; } } });
+    m.on('drag', () => { const p = m.getLatLng(); draw.coords[i] = [p.lat, p.lng]; redrawDraw(false); placeDrop(); });
     m.on('dragend', () => { draw.undo.push('move'); saveDraft(); rebuildHandles(); });
-    m.on('click', () => vertexMenu(i));
+    m.on('click', e => { L.DomEvent.stopPropagation(e); selectVertex(i); });
   });
+  placeDrop(true);
   const segs = closed ? n : n - 1;
-  if (n < 2) return;
+  if (n < 2 || draw.selV != null) return;   // com um ponto selecionado, só ele e a gota ficam tocáveis
   for (let i = 0; i < segs; i++) {
     const a = draw.coords[i], b = draw.coords[(i + 1) % n];
     if (n === 2 && i === 1) break;
@@ -464,12 +616,76 @@ function rebuildHandles() {
   }
 }
 
-async function vertexMenu(i) {
+// ---- gota de precisão: fica abaixo do ponto selecionado; arrastar a gota move o ponto sem o dedo cobri-lo
+
+let dropLayer = null;
+
+function selectVertex(i) {
+  if (!draw) return;
+  draw.selV = draw.selV === i ? null : i;
+  rebuildHandles();
+}
+
+function deselectVertex() {
+  if (!draw || draw.selV == null) return false;
+  draw.selV = null;
+  rebuildHandles();
+  return true;
+}
+
+const DROP_SVG = '<svg viewBox="0 0 44 58"><path d="M22 2C22 2 4 24 4 36a18 18 0 0 0 36 0C40 24 22 2 22 2Z" fill="#00e5ff" stroke="#fff" stroke-width="3"/><circle cx="22" cy="37" r="6" fill="#fff"/></svg>';
+const TRASH_SVG = '<svg viewBox="0 0 24 24"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-3 6h12l-1 12H7L6 9Z"/></svg>';
+
+/** Posiciona (ou cria) a gota e o botão de remover ponto. */
+function placeDrop(rebuild = false) {
+  if (!draw) return;
+  if (rebuild || draw.selV == null) {
+    if (dropLayer) { dropLayer.remove(); dropLayer = null; }
+  }
+  const i = draw.selV;
+  if (i == null || draw.recording) return;
+  const v = draw.coords[i];
+  const vp = map.latLngToContainerPoint(v);
+  const dropLL = map.containerPointToLatLng(vp.add([0, DROP_OFF]));
+  const trashLL = map.containerPointToLatLng(vp.add([54, DROP_OFF + 4]));
+  if (dropLayer && !rebuild) {
+    if (!draw.dropping) dropLayer.drop.setLatLng(dropLL);
+    dropLayer.trash.setLatLng(trashLL);
+    dropLayer.line.setLatLngs([v, dropLL]);
+    return;
+  }
+  dropLayer = L.layerGroup().addTo(drawGroup);
+  dropLayer.line = L.polyline([v, dropLL], { color: '#00e5ff', weight: 2, dashArray: '4 4', interactive: false }).addTo(dropLayer);
+  const drop = L.marker(dropLL, {
+    draggable: true, zIndexOffset: 1200, keyboard: false,
+    icon: L.divIcon({ className: 'drop', html: DROP_SVG, iconSize: [44, 58], iconAnchor: [22, 37] })
+  }).addTo(dropLayer);
+  const trash = L.marker(trashLL, {
+    zIndexOffset: 1200, keyboard: false,
+    icon: L.divIcon({ className: 'dtrash', html: TRASH_SVG, iconSize: [40, 40], iconAnchor: [20, 20] })
+  }).addTo(dropLayer);
+  dropLayer.drop = drop; dropLayer.trash = trash;
+  drop.on('dragstart', () => { draw.dropping = true; });
+  drop.on('drag', () => {
+    const p = map.latLngToContainerPoint(drop.getLatLng()).subtract([0, DROP_OFF]);
+    const ll = map.containerPointToLatLng(p);
+    draw.coords[i] = [ll.lat, ll.lng];
+    if (draw.vmarks && draw.vmarks[i]) draw.vmarks[i].setLatLng(ll);
+    dropLayer.line.setLatLngs([ll, drop.getLatLng()]);
+    redrawDraw(false);
+  });
+  drop.on('dragend', () => { draw.dropping = false; draw.undo.push('move'); saveDraft(); rebuildHandles(); });
+  drop.on('click', e => L.DomEvent.stopPropagation(e));
+  trash.on('click', e => { L.DomEvent.stopPropagation(e); removeVertex(i); });
+}
+
+async function removeVertex(i) {
   const min = draw.type === 'polygon' ? 3 : 2;
   if (draw.coords.length <= min && draw.editingId) { toast('Não dá para remover: é o mínimo de pontos'); return; }
   const ok = await askConfirm(`Ponto ${i + 1}`, 'Remover este ponto da medição?', 'Remover', true);
   if (!ok || !draw) return;
   draw.coords.splice(i, 1);
+  draw.selV = null;
   saveDraft();
   redrawDraw(true);
 }
@@ -503,7 +719,7 @@ function updateHud() {
   } else {
     h = `<div class="big">Ponto</div><div class="sub">${n ? draw.coords[0][0].toFixed(6) + ', ' + draw.coords[0][1].toFixed(6) : 'toque no mapa ou use o GPS'}</div>`;
   }
-  if (gps.wanted) {
+  if (draw.mode !== 'manual') {
     if (gps.fix) {
       const bad = gps.fix.acc > db.settings.gpsMaxAcc;
       h += `<div class="gps${bad ? ' bad' : ''}">GPS ±${Math.round(gps.fix.acc)} m${bad ? ' — fraco, aguardando melhorar' : ''}${draw.recording ? ' · gravando' : ''}</div>`;
@@ -517,7 +733,7 @@ function updateHud() {
 }
 
 async function gpsPoint() {
-  if (!gps.stop) { followOnce = true; await startGps(); $('btnLocate').classList.add('on'); }
+  await startGps();
   if (!gps.fix) { toast('Aguardando o GPS… toque de novo quando aparecer a precisão'); updateHud(); return; }
   if (gps.fix.acc > db.settings.gpsMaxAcc) {
     const ok = await askConfirm('GPS fraco', `A precisão agora é de ±${Math.round(gps.fix.acc)} m. Marcar o ponto mesmo assim?`, 'Marcar');
@@ -544,6 +760,7 @@ async function cancelDraw() {
 function endDraw() {
   keepAwake(false);
   draw = null;
+  dropLayer = null;
   map.doubleClickZoom.enable();
   clearDraft();
   drawGroup.clearLayers();
@@ -559,9 +776,9 @@ function finishDraw() {
     const it = db.items.find(i => i.id === draw.editingId);
     if (it) { it.coords = draw.coords; persist(); }
     const id = draw.editingId;
+    sel = id;
     endDraw();
     toast('Forma atualizada');
-    openItemSheet(id);
     return;
   }
   const count = db.items.filter(i => i.type === draw.type).length + 1;
@@ -712,6 +929,7 @@ function openItemSheet(id, fresh = null) {
     if (isNew) {
       db.items.push(it);
       if (it.folderId) db.activeFolder = it.folderId;
+      sel = it.id;
     } else {
       Object.assign(orig, it);
     }
@@ -729,6 +947,7 @@ function openItemSheet(id, fresh = null) {
     $('itDel').onclick = async () => {
       if (!await askConfirm('Excluir', `Excluir "${orig.name}"?`, 'Excluir', true)) return;
       db.items = db.items.filter(i => i.id !== orig.id);
+      if (sel === orig.id) sel = null;
       persist();
       closeSheet(false);
       renderItems();
@@ -816,8 +1035,9 @@ function openFolders() {
   body.querySelectorAll('[data-menu]').forEach(b => b.onclick = () => folderMenu(b.dataset.menu));
   body.querySelectorAll('[data-item]').forEach(b => b.onclick = () => {
     const it = db.items.find(x => x.id === b.dataset.item);
+    closeSheet(false);
     fitTo(it.coords);
-    openItemSheet(it.id);
+    selectItem(it.id);
   });
 }
 
@@ -992,8 +1212,9 @@ async function openSettings() {
     <div class="sheet-scroll">
       <label class="f">Segunda unidade de área (além de hectare)</label>
       <select class="in" id="sSec">${Object.entries(SECONDARY_UNITS).map(([k, v]) => opt(k, s.secondary, v.label)).join('')}</select>
-      <label class="f">Nomes no mapa</label>
-      <select class="in" id="sLab">${opt('name_area', s.labels, 'Nome e área')}${opt('name', s.labels, 'Só o nome')}${opt('none', s.labels, 'Não mostrar')}</select>
+      <label class="check"><input type="checkbox" id="sShowLab"${s.showLabels ? ' checked' : ''}> Mostrar os rótulos no mapa</label>
+      <label class="f">O que aparece no rótulo</label>
+      <select class="in" id="sLab">${opt('name_area', s.labels, 'Nome e área')}${opt('name', s.labels, 'Só o nome')}</select>
       <label class="check"><input type="checkbox" id="sSeg"${s.segLabels ? ' checked' : ''}> Mostrar o comprimento de cada lado ao desenhar</label>
       <label class="check"><input type="checkbox" id="sDesc"${s.descArea ? ' checked' : ''}> Gravar área e perímetro na descrição do KML</label>
 
@@ -1031,6 +1252,7 @@ async function openSettings() {
   count();
   $('sSec').onchange = e => { s.secondary = e.target.value; };
   $('sLab').onchange = e => { s.labels = e.target.value; };
+  $('sShowLab').onchange = e => { s.showLabels = e.target.checked; };
   $('sSeg').onchange = e => { s.segLabels = e.target.checked; };
   $('sDesc').onchange = e => { s.descArea = e.target.checked; };
   $('sMin').onchange = e => { s.gpsMinDist = Number(e.target.value); };
@@ -1137,6 +1359,13 @@ async function maybeRemindBackup() {
   if (ok) await doBackup('share');
 }
 
+function updateCompass() {
+  const b = map.getBearing ? map.getBearing() : 0;
+  const off = Math.abs(((b % 360) + 360) % 360) < 0.5 || Math.abs(((b % 360) + 360) % 360 - 360) < 0.5;
+  $('btnNorth').classList.toggle('hidden', off);
+  $('btnNorth').querySelector('svg').style.transform = `rotate(${-b}deg)`;
+}
+
 // ------------------------------------------------------------------ barra inferior
 
 const ICON = {
@@ -1149,7 +1378,10 @@ const ICON = {
   rec: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/></svg>',
   pause: '<svg viewBox="0 0 24 24"><path d="M7 5h4v14H7V5Zm6 0h4v14h-4V5Z"/></svg>',
   x: '<svg viewBox="0 0 24 24"><path d="m6.400 5 5.600 5.600L17.600 5 19 6.400 13.400 12l5.600 5.600-1.400 1.400-5.600-5.600L6.400 19 5 17.600 10.600 12 5 6.400 6.400 5Z"/></svg>',
-  ok: '<svg viewBox="0 0 24 24"><path d="m9.500 16.200-4.200-4.200L3.900 13.400l5.600 5.600 11-11-1.400-1.400L9.500 16.200Z"/></svg>'
+  ok: '<svg viewBox="0 0 24 24"><path d="m9.500 16.200-4.200-4.200L3.900 13.400l5.600 5.600 11-11-1.400-1.400L9.500 16.200Z"/></svg>',
+  edit: '<svg viewBox="0 0 24 24"><path d="M3 17.250V21h3.750L17.800 9.950l-3.750-3.750L3 17.250ZM20.700 7.050a1 1 0 0 0 0-1.400l-2.350-2.350a1 1 0 0 0-1.400 0l-1.850 1.850 3.750 3.750 1.850-1.850Z"/></svg>',
+  trash: '<svg viewBox="0 0 24 24"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-3 6h12l-1 12H7L6 9Z"/></svg>',
+  cfg: '<svg viewBox="0 0 24 24"><path d="M3 5h12v2H3V5Zm14 0h4v2h-4V5Zm-2-2h2v6h-2V3ZM3 11h4v2H3v-2Zm6 0h12v2H9v-2Zm-2-2h2v6H7V9Zm-4 8h10v2H3v-2Zm12 0h6v2h-6v-2Zm-2-2h2v6h-2v-6Z"/></svg>'
 };
 
 function renderBottom() {
@@ -1191,19 +1423,26 @@ function renderBottom() {
 function handleBack() {
   if ($('modal').classList.contains('open')) { closeModal(null); return true; }
   if ($('sheet').classList.contains('open')) { closeSheet(); return true; }
+  if ($('chooser')) { closeChooser(); return true; }
+  if (draw && deselectVertex()) return true;
   if (draw) { cancelDraw(); return true; }
+  if (sel) { clearSelection(); return true; }
   return false;
 }
 
 async function init() {
   db = normalizeDb(await loadDb());
 
-  map = L.map('map', { zoomControl: false, attributionControl: true, maxZoom: 22, zoomSnap: 0.5, tap: false });
+  map = L.map('map', {
+    zoomControl: false, attributionControl: true, maxZoom: 22, zoomSnap: 0.5, tap: false,
+    rotate: true, touchRotate: true, rotateControl: false, shiftKeyRotate: true, pitchDrag: false, touchPitch: false
+  });
   map.attributionControl.setPrefix(false);
   baseGroup = L.layerGroup().addTo(map);
   itemGroup = L.layerGroup().addTo(map);
   drawGroup = L.layerGroup().addTo(map);
   gpsLayer = L.layerGroup().addTo(map);
+  selLayer = L.layerGroup().addTo(map);
   L.control.scale({ imperial: false, position: 'bottomright' }).addTo(map);
 
   const start = allCoords(db.items.filter(i => isVisible(db, i)));
@@ -1211,7 +1450,16 @@ async function init() {
 
   let lastHint = 0;
   map.on('click', e => {
-    if (!draw || draw.recording) return;
+    if (!draw) {
+      if ($('chooser')) { closeChooser(); return; }
+      const hits = hitTest(e.latlng, e.containerPoint);
+      if (!hits.length) clearSelection();
+      else if (hits.length === 1) selectItem(hits[0].id);
+      else showChooser(hits, e.containerPoint);
+      return;
+    }
+    if (draw.recording) return;
+    if (deselectVertex()) return;
     if (draw.mode !== 'manual') {
       if (Date.now() - lastHint > 4000) { lastHint = Date.now(); toast('Neste modo os pontos vêm do GPS. Toque em "Modo" no topo para marcar à mão.', 3500); }
       return;
@@ -1219,6 +1467,13 @@ async function init() {
     addPoint([e.latlng.lat, e.latlng.lng]);
   });
   map.on('zoomend', () => requestAnimationFrame(declutter));
+  let rotFrame = 0;
+  map.on('rotate', () => {
+    updateCompass();
+    if (!rotFrame) rotFrame = requestAnimationFrame(() => { rotFrame = 0; declutter(); });
+  });
+  map.on('move zoom rotate', () => { if (draw && draw.selV != null && !draw.dropping) placeDrop(); });
+  map.on('movestart zoomstart', closeChooser);
 
   await setBase();
   renderItems();
@@ -1233,13 +1488,8 @@ async function init() {
     const c = allCoords(db.items.filter(i => isVisible(db, i)));
     if (c.length) fitTo(c); else toast('Nenhuma medição para mostrar');
   };
-  $('btnLocate').onclick = async () => {
-    if (gps.stop && !draw) { stopGps(); return; }
-    followOnce = true;
-    if (gps.fix) { map.setView([gps.fix.lat, gps.fix.lng], Math.max(map.getZoom(), 17)); followOnce = false; }
-    await startGps();
-    $('btnLocate').classList.add('on');
-  };
+  $('btnLocate').onclick = goToMe;
+  $('btnNorth').onclick = () => map.setBearing(0, { animate: true, duration: 0.35 });
   $('backupInput').addEventListener('change', async e => {
     const f = e.target.files[0];
     e.target.value = '';
@@ -1252,7 +1502,14 @@ async function init() {
   });
   $('sheet').addEventListener('click', e => { if (e.target === $('sheet')) closeSheet(); });
   onBackButton(handleBack);
-  document.addEventListener('visibilitychange', () => { if (document.hidden) saveDb(db); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      saveDb(db);
+      if (!(draw && draw.recording)) stopGps();   // minimizado: desliga para poupar bateria
+    } else {
+      startGps();
+    }
+  });
 
   // medição que ficou pela metade (app fechado no meio da caminhada)
   try {
@@ -1266,8 +1523,9 @@ async function init() {
 
   await maybeRemindBackup();
 
-  if (!db.items.length && !draw) { followOnce = true; startGps().then(() => $('btnLocate').classList.add('on')); }
+  if (!db.items.length && !draw) followOnce = true;
+  startGps();
 }
 
-window.__pv = { get db() { return db; }, get draw() { return draw; }, get map() { return map; } };
+window.__pv = { get db() { return db; }, get draw() { return draw; }, get map() { return map; }, get gps() { return gps; }, get sel() { return sel; } };
 init();
