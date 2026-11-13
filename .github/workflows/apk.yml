@@ -48,14 +48,17 @@ jobs:
       - name: Preparar APK
         run: cp android/app/build/outputs/apk/release/app-release.apk pv-area.apk
 
-      # Branch "espera": só gera o APK de teste (sem publicar versão)
+      # Branch "espera": APK de teste como pré-lançamento (não vira a versão "mais recente")
       - name: Guardar APK de teste
         if: github.ref != 'refs/heads/main'
-        uses: actions/upload-artifact@v4
+        uses: softprops/action-gh-release@v2
         with:
-          name: pv-area-teste
-          path: pv-area.apk
-          retention-days: 14
+          tag_name: teste-1.0.${{ github.run_number }}
+          name: Teste 1.0.${{ github.run_number }} (não publicado)
+          body: APK de teste do branch espera, commit ${{ github.sha }}. Não é a versão oficial.
+          files: pv-area.apk
+          prerelease: true
+          make_latest: false
 
       - name: Publicar versão
         if: github.ref == 'refs/heads/main'
