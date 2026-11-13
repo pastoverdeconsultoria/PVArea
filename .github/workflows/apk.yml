@@ -2,14 +2,14 @@ name: Gerar APK
 
 on:
   push:
-    branches: [main]
+    branches: [main, espera]
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
 concurrency:
-  group: apk
+  group: apk-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -48,7 +48,17 @@ jobs:
       - name: Preparar APK
         run: cp android/app/build/outputs/apk/release/app-release.apk pv-area.apk
 
+      # Branch "espera": só gera o APK de teste (sem publicar versão)
+      - name: Guardar APK de teste
+        if: github.ref != 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pv-area-teste
+          path: pv-area.apk
+          retention-days: 14
+
       - name: Publicar versão
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.${{ github.run_number }}
