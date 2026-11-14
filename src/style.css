@@ -136,6 +136,8 @@ textarea.in { min-height: 64px; resize: vertical; }
 .lbl2 { background: transparent; border: 0; }
 .lblin { position: absolute; left: 0; top: 0; transform: translate(-50%, calc(-50% + var(--dy, 0px))); white-space: nowrap; text-align: center; color: #fff; font-weight: 700; font-size: 12px; line-height: 1.15; padding: 3px 7px; border-radius: 9px; background: rgba(0,0,0,.32); text-shadow: 0 0 3px #000, 0 0 2px #000; cursor: pointer; }
 .lblin.pt { transform: translate(-50%, calc(4px + var(--dy, 0px))); }
+.lblin.hid { display: none; }
+.lblin.s1 small { display: none; }
 .lblin small { font-weight: 600; font-size: 11px; }
 .drawing .leaflet-marker-icon.lbl2, .drawing .leaflet-marker-icon.pin { pointer-events: none !important; }
 

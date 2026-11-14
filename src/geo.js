@@ -185,3 +185,13 @@ export function fmtDist(m) {
   if (m >= 10000) return num(m / 1000, 2) + ' km';
   return num(m, m < 100 ? 1 : 0) + ' m';
 }
+
+/**
+ * Quanto do rótulo cabe no zoom atual: 0 = esconde, 1 = só o nome, 2 = nome e medida.
+ * kind: 'polygon' | 'line' | 'point'. px: menor lado do polígono ou comprimento da linha, em pixels de tela.
+ */
+export function labelLevel(kind, px, zoom) {
+  if (kind === 'polygon') return px < 28 ? 0 : px < 80 ? 1 : 2;
+  if (kind === 'line') return zoom < 15 || px < 80 ? 0 : px < 150 ? 1 : 2;
+  return zoom < 16 ? 0 : 2;
+}

@@ -31,7 +31,7 @@ export function emptyDb() {
     items: [],
     activeFolder: null,
     settings: {
-      base: 'esri', googleKey: '', secondary: 'none', labels: 'name_area', showLabels: true,
+      base: 'esri', googleKey: '', secondary: 'none', labels: 'name_area', showLabels: true, zoomLabels: true,
       gpsMinDist: 3, gpsMaxAcc: 15, descArea: true, segLabels: true,
       lastStyle: { ...DEFAULT_STYLE }, lastIcon: 'blue', lastMethod: {},
       backupReminder: true, lastBackup: null, changedAt: null, remindedAt: null, created: null
@@ -52,6 +52,7 @@ export function normalizeDb(raw) {
   if (db.settings.labels === 'none') { db.settings.labels = 'name_area'; db.settings.showLabels = false; }
   if (db.settings.labels !== 'name') db.settings.labels = 'name_area';
   db.settings.showLabels = db.settings.showLabels !== false;
+  db.settings.zoomLabels = db.settings.zoomLabels !== false;
   const ids = new Set(db.folders.map(f => f.id));
   for (const f of db.folders) if (f.parentId && !ids.has(f.parentId)) f.parentId = null;
   for (const it of db.items) if (it.folderId && !ids.has(it.folderId)) it.folderId = null;

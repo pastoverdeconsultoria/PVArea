@@ -328,3 +328,22 @@ test('backup: lembrete só após 7 dias, com alteração nova, no máximo uma ve
   db.settings.backupReminder = true; db.items = [];
   assert.equal(backupDue(db, dia(40)), false, 'sem medições');
 });
+
+test('rótulos por zoom: longe esconde, perto mostra', async () => {
+  const { labelLevel } = await import('../src/geo.js');
+  assert.equal(labelLevel('polygon', 10, 12), 0);
+  assert.equal(labelLevel('polygon', 50, 14), 1);
+  assert.equal(labelLevel('polygon', 200, 16), 2);
+  assert.equal(labelLevel('line', 500, 14), 0);
+  assert.equal(labelLevel('line', 50, 18), 0);
+  assert.equal(labelLevel('line', 120, 17), 1);
+  assert.equal(labelLevel('line', 400, 17), 2);
+  assert.equal(labelLevel('point', 0, 15), 0);
+  assert.equal(labelLevel('point', 0, 17), 2);
+});
+
+test('configuração zoomLabels vem ligada e respeita o que foi salvo', () => {
+  assert.equal(emptyDb().settings.zoomLabels, true);
+  assert.equal(normalizeDb({ settings: {} }).settings.zoomLabels, true);
+  assert.equal(normalizeDb({ settings: { zoomLabels: false } }).settings.zoomLabels, false);
+});

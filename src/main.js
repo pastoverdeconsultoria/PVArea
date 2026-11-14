@@ -7,7 +7,7 @@ import {
   descendantIds, itemsDeep, folderTotals, folderList, folderPath, canMoveFolder, isVisible, itemArea, itemLength,
   exportTree, importTree, safeFileName, makeBackup, parseBackup, restoreBackup, mergeBackup, backupDue, backupFileName
 } from './model.js';
-import { polygonArea, pathLength, distance, labelPoint, pointInRing, bounds, fmtArea, fmtDist, SECONDARY_UNITS } from './geo.js';
+import { polygonArea, pathLength, distance, labelPoint, labelLevel, pointInRing, bounds, fmtArea, fmtDist, SECONDARY_UNITS } from './geo.js';
 import { buildKml, parseKml, countTree, esc } from './kml.js';
 import { isNative, loadDb, saveDb, shareFile, saveToDocuments, watchGps, keepAwake, onBackButton } from './platform.js';
 import { BASES, baseLayers, cachedTileCount, clearTileCache } from './tiles.js';
@@ -183,7 +183,7 @@ function renderItems() {
     const labAnchor = it.type === 'point' ? it.coords[0] : anchor;
     if (html && labAnchor) {
       const lm = L.marker(labAnchor, {
-        icon: L.divIcon({ className: 'lbl2', html: `<div class="lblin${it.type === 'point' ? ' pt' : ''}">${html}</div>`, iconSize: [0, 0] }),
+        icon: L.divIcon({ className: 'lbl2', html: `<div class="lblin${it.type === 'point' ? ' pt' : ''}" data-id="${esc(String(it.id))}">${html}</div>`, iconSize: [0, 0] }),
         keyboard: false, zIndexOffset: 900
       });
       lm.on('click', e => {
@@ -194,7 +194,7 @@ function renderItems() {
     }
   }
   map.getContainer().classList.toggle('drawing', !!draw);
-  requestAnimationFrame(declutter);
+  requestAnimationFrame(layoutLabels);
   updateChip();
   renderSelection();
 }
@@ -213,6 +213,7 @@ function selectItem(id) {
   closeChooser();
   sel = id;
   renderSelection();
+  requestAnimationFrame(layoutLabels);
 }
 
 function clearSelection() {
@@ -336,6 +337,59 @@ function declutter() {
     }
     if (dy) q.e.style.setProperty('--dy', dy + 'px');
     placed.push({ l: q.l, r: q.r, t: q.t + dy, b: q.b + dy });
+  }
+}
+
+const bboxCache = new WeakMap();
+/** Menor lado do polígono (ou comprimento da linha) em metros, guardado por geometria. */
+function itemExtentM(it) {
+  let v = bboxCache.get(it.coords);
+  if (v !== undefined) return v;
+  if (it.type === 'line') v = itemLength(it);
+  else {
+    const b = bounds(it.coords);
+    const lat = (b[0][0] + b[1][0]) / 2;
+    const h = (b[1][0] - b[0][0]) * 111320;
+    const w = (b[1][1] - b[0][1]) * 111320 * Math.cos(lat * Math.PI / 180);
+    v = Math.min(h, w);
+  }
+  bboxCache.set(it.coords, v);
+  return v;
+}
+
+/**
+ * Rótulos conforme o zoom: longe só aparecem os pastos maiores e só o nome; perto aparecem todos.
+ * O que não cabe fica escondido (não empilha). Prioridade: selecionado, pastos, pontos, linhas.
+ */
+function layoutLabels() {
+  const els = [...document.querySelectorAll('.lblin')];
+  if (!els.length) return;
+  els.forEach(e => { e.classList.remove('hid', 's1'); e.style.removeProperty('--dy'); });
+  if (db.settings.zoomLabels === false) { declutter(); return; }
+  const byId = new Map(db.items.map(i => [String(i.id), i]));
+  const zoom = map.getZoom();
+  const lat = map.getCenter().lat;
+  const ppm = (256 * 2 ** zoom) / (40075016.686 * Math.cos(lat * Math.PI / 180));
+  const cand = [];
+  for (const e of els) {
+    const it = byId.get(e.dataset.id);
+    if (!it) continue;
+    const isSel = sel != null && String(sel) === String(it.id);
+    const px = it.type === 'point' ? 0 : itemExtentM(it) * ppm;
+    const lvl = isSel ? 2 : labelLevel(it.type, px, zoom);
+    if (lvl === 0) { e.classList.add('hid'); continue; }
+    if (lvl === 1) e.classList.add('s1');
+    const rank = isSel ? 0 : it.type === 'polygon' ? 1 : it.type === 'point' ? 2 : 3;
+    cand.push({ e, rank, px });
+  }
+  if (cand.length > 1500) return;
+  cand.sort((a, b) => a.rank - b.rank || b.px - a.px);
+  const placed = [];
+  for (const c of cand) {
+    const r = c.e.getBoundingClientRect();
+    const q = { l: r.left - 2, r: r.right + 2, t: r.top - 1, b: r.bottom + 1 };
+    if (c.rank > 0 && placed.some(p => q.l < p.r && q.r > p.l && q.t < p.b && q.b > p.t)) c.e.classList.add('hid');
+    else placed.push(q);
   }
 }
 
@@ -1213,6 +1267,7 @@ async function openSettings() {
       <label class="f">Segunda unidade de área (além de hectare)</label>
       <select class="in" id="sSec">${Object.entries(SECONDARY_UNITS).map(([k, v]) => opt(k, s.secondary, v.label)).join('')}</select>
       <label class="check"><input type="checkbox" id="sShowLab"${s.showLabels ? ' checked' : ''}> Mostrar os rótulos no mapa</label>
+      <label class="check"><input type="checkbox" id="sZoomLab"${s.zoomLabels !== false ? ' checked' : ''}> Rótulos conforme o zoom (esconde os que não cabem)</label>
       <label class="f">O que aparece no rótulo</label>
       <select class="in" id="sLab">${opt('name_area', s.labels, 'Nome e área')}${opt('name', s.labels, 'Só o nome')}</select>
       <label class="check"><input type="checkbox" id="sSeg"${s.segLabels ? ' checked' : ''}> Mostrar o comprimento de cada lado ao desenhar</label>
@@ -1253,6 +1308,7 @@ async function openSettings() {
   $('sSec').onchange = e => { s.secondary = e.target.value; };
   $('sLab').onchange = e => { s.labels = e.target.value; };
   $('sShowLab').onchange = e => { s.showLabels = e.target.checked; };
+  $('sZoomLab').onchange = e => { s.zoomLabels = e.target.checked; };
   $('sSeg').onchange = e => { s.segLabels = e.target.checked; };
   $('sDesc').onchange = e => { s.descArea = e.target.checked; };
   $('sMin').onchange = e => { s.gpsMinDist = Number(e.target.value); };
@@ -1466,11 +1522,11 @@ async function init() {
     }
     addPoint([e.latlng.lat, e.latlng.lng]);
   });
-  map.on('zoomend', () => requestAnimationFrame(declutter));
+  map.on('zoomend', () => requestAnimationFrame(layoutLabels));
   let rotFrame = 0;
   map.on('rotate', () => {
     updateCompass();
-    if (!rotFrame) rotFrame = requestAnimationFrame(() => { rotFrame = 0; declutter(); });
+    if (!rotFrame) rotFrame = requestAnimationFrame(() => { rotFrame = 0; layoutLabels(); });
   });
   map.on('move zoom rotate', () => { if (draw && draw.selV != null && !draw.dropping) placeDrop(); });
   map.on('movestart zoomstart', closeChooser);
