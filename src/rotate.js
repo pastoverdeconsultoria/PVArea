@@ -36,7 +36,11 @@ if (TG && !TG.__pvPatched) {
         this._startBearing = this._map.getBearing() + raw;
       }
     }
-    return move.call(this, e);
+    // O plugin encerra uma "animação de zoom" a cada movimento dos dedos, o que dispara zoomend/moveend
+    // dezenas de vezes por segundo (recarrega imagens, refaz rótulos). O Leaflet normal só faz isso ao soltar.
+    const z = this.zoom;
+    this.zoom = false;
+    try { return move.call(this, e); } finally { this.zoom = z; }
   };
   TG._onTouchEnd = function (e) {
     this._pvWant = this._pvOn = false;

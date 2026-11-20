@@ -54,6 +54,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: teste-1.0.${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
           name: Teste 1.0.${{ github.run_number }} (não publicado)
           body: APK de teste do branch espera, commit ${{ github.sha }}. Não é a versão oficial.
           files: pv-area.apk
