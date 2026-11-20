@@ -154,6 +154,7 @@ function labelHtml(it) {
 
 function renderItems() {
   itemGroup.clearLayers();
+  labelMarks = [];
   const editingId = draw && draw.editingId;
   for (const it of db.items) {
     if (it.id === editingId || !isVisible(db, it)) continue;
@@ -182,7 +183,7 @@ function renderItems() {
     const html = labelHtml(it);
     const labAnchor = it.type === 'point' ? it.coords[0] : anchor;
     if (html && labAnchor) {
-      const lm = L.marker(labAnchor, {
+      const lm = new LabelMarker(labAnchor, {
         icon: L.divIcon({ className: 'lbl2', html: `<div class="lblin${it.type === 'point' ? ' pt' : ''}" data-id="${esc(String(it.id))}">${html}</div>`, iconSize: [0, 0] }),
         keyboard: false, zIndexOffset: 900
       });
@@ -190,6 +191,8 @@ function renderItems() {
         L.DomEvent.stopPropagation(e);
         if (!draw) selectItem(it.id);
       });
+      lm._pvPt = it.type === 'point';
+      labelMarks.push(lm);
       itemGroup.addLayer(lm);
     }
   }
@@ -320,14 +323,62 @@ function closeChooser() {
 }
 
 /** Afasta para baixo os rótulos que se encostam, para todos continuarem legíveis e tocáveis. */
+/**
+ * Rótulo: não se reposiciona a cada quadro do giro (com muitos pastos isso travava o mapa).
+ * Durante o giro os rótulos somem e voltam no lugar certo quando o giro para.
+ */
+const LabelMarker = L.Marker.extend({
+  getEvents() {
+    const ev = L.Marker.prototype.getEvents.call(this);
+    delete ev.rotate;
+    return ev;
+  }
+});
+
+let rotEndTimer = 0;
+function onRotateFrame() {
+  const c = map.getContainer();
+  if (!c.classList.contains('rotating')) c.classList.add('rotating');
+  clearTimeout(rotEndTimer);
+  rotEndTimer = setTimeout(() => {
+    for (const m of labelMarks) if (m._map) m.update();
+    layoutLabels();
+    c.classList.remove('rotating');
+  }, 180);
+}
+
+/**
+ * Afasta rótulos que se sobrepõem. Não lê posições do DOM (isso travava o giro do mapa):
+ * mede o tamanho de cada rótulo uma vez e calcula a posição pela coordenada.
+ */
+let labelMarks = [];
 function declutter() {
-  const els = [...document.querySelectorAll('.lblin')];
-  if (!els.length || els.length > 500) return;
-  els.forEach(e => e.style.removeProperty('--dy'));
-  const rects = els.map(e => { const r = e.getBoundingClientRect(); return { e, l: r.left, r: r.right, t: r.top, b: r.bottom }; });
-  rects.sort((a, b) => a.t - b.t || a.l - b.l);
+  if (!map || !labelMarks.length || labelMarks.length > 800) return;
+  const fresh = labelMarks.filter(m => m._pvW === undefined && m._icon);
+  if (fresh.length) {
+    const ins = fresh.map(m => m._icon.firstElementChild);
+    const sz = ins.map(e => [e.offsetWidth, e.offsetHeight]);   // uma leitura só, para todos os novos
+    fresh.forEach((m, k) => { m._pvW = sz[k][0]; m._pvH = sz[k][1]; m._pvDy = 0; });
+  }
+  const W = map.getSize().x, H = map.getSize().y;
+  const boxes = [];
+  const setDy = (m, dy, hide) => {
+    if (dy === m._pvDy && hide === !!m._pvHide) return;
+    m._pvDy = dy; m._pvHide = hide;
+    const e = m._icon.firstElementChild;
+    if (dy) e.style.setProperty('--dy', dy + 'px'); else e.style.removeProperty('--dy');
+    e.classList.toggle('lblhide', hide);
+  };
+  for (const m of labelMarks) {
+    if (!m._icon || m._pvW === undefined) continue;
+    const p = map.latLngToContainerPoint(m.getLatLng());
+    const l = p.x - m._pvW / 2, t = m._pvPt ? p.y + 4 : p.y - m._pvH / 2;
+    if (l > W + 50 || l + m._pvW < -50 || t > H + 50 || t + m._pvH < -50) { setDy(m, 0, false); continue; }
+    boxes.push({ m, l, r: l + m._pvW, t, b: t + m._pvH });
+  }
+  boxes.sort((a, b) => a.t - b.t || a.l - b.l);
   const placed = [];
-  for (const q of rects) {
+  for (const q of boxes) {
     let dy = 0, moved = true, guard = 0;
     while (moved && guard++ < 40) {
       moved = false;
@@ -335,7 +386,10 @@ function declutter() {
         if (q.l < p.r && q.r > p.l && q.t + dy < p.b && q.b + dy > p.t) { dy = p.b - q.t + 1; moved = true; }
       }
     }
-    if (dy) q.e.style.setProperty('--dy', dy + 'px');
+    dy = Math.round(dy);
+    // muito longe do próprio pasto: melhor esconder do que pôr o rótulo dentro do pasto vizinho
+    if (dy > q.m._pvH * 1.6) { setDy(q.m, 0, true); continue; }
+    setDy(q.m, dy, false);
     placed.push({ l: q.l, r: q.r, t: q.t + dy, b: q.b + dy });
   }
 }
@@ -362,9 +416,10 @@ function itemExtentM(it) {
  * O que não cabe fica escondido (não empilha). Prioridade: selecionado, pastos, pontos, linhas.
  */
 function layoutLabels() {
-  const els = [...document.querySelectorAll('.lblin')];
-  if (!els.length) return;
-  els.forEach(e => { e.classList.remove('hid', 's1'); e.style.removeProperty('--dy'); });
+  if (!map || !labelMarks.length) return;
+  const els = labelMarks.filter(m => m._icon).map(m => m._icon.firstElementChild);
+  for (const m of labelMarks) { m._pvDy = 0; m._pvHide = false; m._pvW = undefined; }
+  els.forEach(e => { e.classList.remove('hid', 's1', 'lblhide'); e.style.removeProperty('--dy'); });
   if (db.settings.zoomLabels === false) { declutter(); return; }
   const byId = new Map(db.items.map(i => [String(i.id), i]));
   const zoom = map.getZoom();
@@ -384,13 +439,16 @@ function layoutLabels() {
   }
   if (cand.length > 1500) return;
   cand.sort((a, b) => a.rank - b.rank || b.px - a.px);
-  const placed = [];
-  for (const c of cand) {
-    const r = c.e.getBoundingClientRect();
+  // todas as leituras de uma vez (um cálculo de layout só), depois as escritas
+  const rects = cand.map(c => c.e.getBoundingClientRect());
+  const placed = [], hide = [];
+  cand.forEach((c, k) => {
+    const r = rects[k];
     const q = { l: r.left - 2, r: r.right + 2, t: r.top - 1, b: r.bottom + 1 };
-    if (c.rank > 0 && placed.some(p => q.l < p.r && q.r > p.l && q.t < p.b && q.b > p.t)) c.e.classList.add('hid');
+    if (c.rank > 0 && placed.some(p => q.l < p.r && q.r > p.l && q.t < p.b && q.b > p.t)) hide.push(c.e);
     else placed.push(q);
-  }
+  });
+  hide.forEach(e => e.classList.add('hid'));
 }
 
 function updateChip() {
@@ -1491,7 +1549,7 @@ async function init() {
 
   map = L.map('map', {
     zoomControl: false, attributionControl: true, maxZoom: 22, zoomSnap: 0.5, tap: false,
-    rotate: true, touchRotate: true, rotateControl: false, shiftKeyRotate: true, pitchDrag: false, touchPitch: false
+    rotate: true, touchRotate: true, renderer: L.svg({ padding: 0.7 }), rotateControl: false, shiftKeyRotate: true, pitchDrag: false, touchPitch: false
   });
   map.attributionControl.setPrefix(false);
   baseGroup = L.layerGroup().addTo(map);
@@ -1523,11 +1581,7 @@ async function init() {
     addPoint([e.latlng.lat, e.latlng.lng]);
   });
   map.on('zoomend', () => requestAnimationFrame(layoutLabels));
-  let rotFrame = 0;
-  map.on('rotate', () => {
-    updateCompass();
-    if (!rotFrame) rotFrame = requestAnimationFrame(() => { rotFrame = 0; layoutLabels(); });
-  });
+  map.on('rotate', () => { updateCompass(); onRotateFrame(); });
   map.on('move zoom rotate', () => { if (draw && draw.selV != null && !draw.dropping) placeDrop(); });
   map.on('movestart zoomstart', closeChooser);
 

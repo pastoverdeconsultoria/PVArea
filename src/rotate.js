@@ -44,4 +44,29 @@ if (TG && !TG.__pvPatched) {
   };
 }
 
+/**
+ * Ao girar, a origem em pixels do mapa varia frações de pixel por erro de arredondamento,
+ * e o plugin reprojetava todos os polígonos quase a cada quadro. Abaixo de 2 px isso não muda nada na tela.
+ */
+const RP = L.Renderer.prototype;
+if (RP._onRotate && !RP.__pvPatched) {
+  RP.__pvPatched = true;
+  const onRotate = RP._onRotate;
+  RP._onRotate = function () {
+    const map = this._map;
+    if (map && map._rotate && this._rotateOrigin) {
+      const o = map.getPixelOrigin();
+      if (Math.abs(o.x - this._rotateOrigin.x) < 2 && Math.abs(o.y - this._rotateOrigin.y) < 2) {
+        if (this._bounds && this._bounds.contains(map._getPaddedPixelBounds(0))) return;
+        const saved = this._rotateOrigin;
+        this._rotateOrigin = o;            // evita o ramo de reprojeção completa
+        const r = onRotate.apply(this, arguments);
+        this._rotateOrigin = saved;
+        return r;
+      }
+    }
+    return onRotate.apply(this, arguments);
+  };
+}
+
 export default L;

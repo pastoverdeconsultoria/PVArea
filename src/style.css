@@ -167,3 +167,5 @@ textarea.in { min-height: 64px; resize: vertical; }
 .dtrash { background: #fff; border-radius: 50%; display: grid !important; place-items: center; box-shadow: 0 1px 5px rgba(0,0,0,.55); }
 .dtrash svg { width: 22px; height: 22px; fill: var(--perigo); }
 .has-sel .leaflet-bottom.leaflet-right { bottom: calc(132px + var(--sab)); }
+.rotating .leaflet-marker-icon.lbl2 { visibility: hidden; }
+.lblin.lblhide { visibility: hidden; pointer-events: none; }
